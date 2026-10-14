@@ -18,12 +18,13 @@ import (
 )
 
 type Service struct {
-	DomainsEnabled func() bool
-	Domains        *domains.Service
-	Origin         string
-	Store          *store.Store
-	Auth           *auth.Service
-	VerifySupplier func(context.Context, string) error
+	PlatformLinksOnly bool
+	DomainsEnabled    func() bool
+	Domains           *domains.Service
+	Origin            string
+	Store             *store.Store
+	Auth              *auth.Service
+	VerifySupplier    func(context.Context, string) error
 }
 
 var identifier = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)

@@ -145,3 +145,20 @@ func TestHierarchyCustomDomainLoginStoreAndLinks(t *testing.T) {
 	object(t, call("parent.example.com", "", "GET", "/api/partner/dashboard", nil, child), 401)
 	object(t, call("parent.example.com", "CHI123", "GET", "/api/catalog", nil), 404)
 }
+
+func TestPlatformLinksKeepSimulatedDomainsOnLocalOrigin(t *testing.T) {
+	owner, app, a, _, mail := identityFixture(t)
+	execSQL(t, owner, `INSERT INTO partners(id,slug,name,email,active) VALUES('local','LOC123','Local','local@example.test',true);
+ INSERT INTO partner_domains(partner_id,hostname,verification,state,checked_at) VALUES('local','local.example.com','fixture','active',now())`)
+	svc := &domains.Service{Store: app, Provider: &domainProvider{}, DNS: &domainDNS{}, Target: "shops.example.invalid", Zone: "platform.example.invalid", Limit: 100}
+	h := httpapi.Router(app, "fixture", slog.New(slog.NewTextHandler(io.Discard, nil)), httpapi.Options{Origin: testOrigin, Auth: a, Domains: svc, PlatformLinksOnly: true})
+	cookie := login(t, h, mail, "partner", "local@example.test")
+	p := object(t, request(h, "GET", "/api/partner/dashboard", nil, cookie), 200)["partner"].(map[string]any)
+	if p["storefront_url"] != testOrigin+"/r/LOC123" || p["login_url"] != testOrigin+"/join" {
+		t.Fatal("simulated domain leaked into preview links", p)
+	}
+	shops := object(t, request(h, "GET", "/api/partner/stores", nil, cookie), 200)
+	if shops["referralOrigin"] != "" {
+		t.Fatal("store preview left the platform origin")
+	}
+}

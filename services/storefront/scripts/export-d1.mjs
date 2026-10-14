@@ -14,7 +14,20 @@ export function exportSnapshot(input, output) {
   const db = new DatabaseSync(input, { readOnly: true, enableLoadExtension: false })
   try {
     db.exec('BEGIN')
-    const tables = db.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' AND name <> 'd1_migrations' ORDER BY name").all().map(r => r.name)
+    let tables = db.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' AND name <> 'd1_migrations' ORDER BY name").all().map(r => r.name)
+    // 0044 adds Worker tickets after this legacy import format was frozen.
+    // Empty ticket tables need no conversion. Never silently drop actual tickets
+    // or their notification history when exporting to the older import format.
+    const tickets = ['partner_tickets', 'partner_ticket_events', 'partner_ticket_notifications']
+    if (tickets.some(name => tables.includes(name))) {
+      if (!tickets.every(name => tables.includes(name))) throw new Error('incomplete Worker ticket schema')
+      if (db.prepare('SELECT count(*) n FROM partner_tickets').get().n ||
+          db.prepare('SELECT count(*) n FROM partner_ticket_events').get().n ||
+          db.prepare('SELECT count(*) n FROM partner_ticket_notifications WHERE id<>1 OR version<>0').get().n) {
+        throw new Error('Worker tickets require a dedicated migration; legacy export refuses to omit ticket data')
+      }
+      tables = tables.filter(name => !tickets.includes(name))
+    }
     if (JSON.stringify(tables) !== JSON.stringify(spec.tables.map(t => t.name))) throw new Error('source tables differ from supported D1 schema')
     const snapshot = { format: 1, schema: createHash('sha256').update(specBytes).digest('hex'), tables: {}, excluded: {} }
     for (const table of spec.tables) {

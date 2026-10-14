@@ -21,14 +21,16 @@ import (
 	"gptibo/storefront/internal/mailer"
 	"gptibo/storefront/internal/payments"
 	"gptibo/storefront/internal/procurement"
+	"gptibo/storefront/internal/recharge"
 	"gptibo/storefront/internal/securityaudit"
 	"gptibo/storefront/internal/store"
 	"gptibo/storefront/internal/telegram"
-	"gptibo/storefront/internal/recharge"
 	"gptibo/storefront/internal/xgift"
 )
 
 type Options struct {
+	// Keep preview links on the platform origin when custom domains are simulated.
+	PlatformLinksOnly bool
 	AdminAccess       *access.Service
 	SecurityAudit     *securityaudit.Service
 	Turnstile         *turnstile.Service
@@ -41,7 +43,7 @@ type Options struct {
 	Telegram          *telegram.Client
 	XGift             *xgift.Service
 	Procurement       *procurement.Service
-	Recharge              *recharge.Service
+	Recharge          *recharge.Service
 	MailSender        mailer.Sender
 	AdminEmail        string
 	PaymentTesting    bool

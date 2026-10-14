@@ -81,7 +81,7 @@ func register(r *gin.Engine, s *store.Store, opts Options) {
 		}
 		return origin.Hostname()
 	}
-	m := management.Service{Store: s, Auth: a, Domains: opts.Domains, Origin: opts.Origin, DomainsEnabled: func() bool { return opts.Domains != nil && opts.Domains.Enabled() }}
+	m := management.Service{PlatformLinksOnly: opts.PlatformLinksOnly, Store: s, Auth: a, Domains: opts.Domains, Origin: opts.Origin, DomainsEnabled: func() bool { return opts.Domains != nil && opts.Domains.Enabled() }}
 	if opts.Recharge != nil {
 		m.VerifySupplier = opts.Recharge.Verify
 	}
@@ -473,7 +473,7 @@ func register(r *gin.Engine, s *store.Store, opts Options) {
 	registerHierarchy(admin, partner, m, token, opts.Origin)
 	registerPayouts(admin, partner, m, token)
 	registerAccounting(admin, m, token)
-	registerDelivery(admin, delivery.Service{Store: s, Auth: a, Sender: opts.MailSender, Origin: opts.Origin, AdminEmail: opts.AdminEmail, DomainsEnabled: func() bool { return opts.Domains != nil && opts.Domains.Enabled() }}, token)
+	registerDelivery(admin, delivery.Service{Store: s, Auth: a, Sender: opts.MailSender, Origin: opts.Origin, AdminEmail: opts.AdminEmail, DomainsEnabled: func() bool { return !opts.PlatformLinksOnly && opts.Domains != nil && opts.Domains.Enabled() }}, token)
 	registerCustomers(admin, partner, m, token)
 	paymentService := payments.Service{Store: s}
 	if opts.Payments != nil {

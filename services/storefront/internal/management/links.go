@@ -29,7 +29,7 @@ func (s Service) partnerLinks(ctx context.Context, q interface {
 	if referralCode.MatchString(slug) {
 		path = "/r/" + slug
 	}
-	if s.Domains != nil && s.Domains.Enabled() {
+	if !s.PlatformLinksOnly && s.Domains != nil && s.Domains.Enabled() {
 		if ownHost != "" {
 			origin, path = "https://"+ownHost, "/"
 		} else if parentHost != "" {
