@@ -180,3 +180,29 @@ func TestSignedSupplierMargin(t *testing.T) {
 		t.Fatal("negative refund margin malformed")
 	}
 }
+
+func TestXTransportPersistenceAndBoundary(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	state, e := OpenState(path)
+	if e != nil {
+		t.Fatal(e)
+	}
+	sim := XTransport{state}
+	body := `{"merchant_order_no":"YMX-LOCAL-X","product_code":"x-3m","recipient":"demo_ok","confirmed_recipient_id":"` + xRecipient("demo_ok") + `","expected_supply_minor":1700}`
+	req, _ := http.NewRequest("POST", "https://local-x.example.invalid/v1/orders", strings.NewReader(body))
+	if _, e = sim.RoundTrip(req); e != nil {
+		t.Fatal(e)
+	}
+	loaded, e := OpenState(path)
+	if e != nil || len(loaded.XOrders) != 1 {
+		t.Fatal("local X order not persisted", e)
+	}
+	req, _ = http.NewRequest("POST", "https://local-x.example.invalid/v1/orders", strings.NewReader(strings.Replace(body, "demo_ok", "other", 1)))
+	if _, e = sim.RoundTrip(req); e == nil {
+		t.Fatal("X idempotency conflict accepted")
+	}
+	req, _ = http.NewRequest("GET", "https://external.example.com/v1/orders", nil)
+	if _, e = sim.RoundTrip(req); e == nil {
+		t.Fatal("external X request accepted")
+	}
+}

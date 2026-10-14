@@ -560,6 +560,21 @@ func register(r *gin.Engine, s *store.Store, opts Options) {
 		orderService.RecoverGift = opts.XGift.Recover
 		registerXGift(group, admin, opts.XGift, token)
 	}
+	if opts.Fulfillment != nil {
+		adapter := opts.Fulfillment
+		orderService.Fulfillment = adapter
+		previousPlan, previousSnapshot := orderService.LivePlan, orderService.LiveSnapshot
+		orderService.LivePlan = func(plan string) bool { return adapter.Enabled(plan) || previousPlan != nil && previousPlan(plan) }
+		orderService.LiveSnapshot = func(ctx context.Context, tx pgx.Tx, o orders.Order, in orders.CreateInput) error {
+			if adapter.Enabled(o.Plan) {
+				return adapter.Snapshot(ctx, tx, o, in)
+			}
+			if previousSnapshot == nil {
+				return orders.Conflict()
+			}
+			return previousSnapshot(ctx, tx, o, in)
+		}
+	}
 	registerOrders(group, admin, orderService, token)
 	registerRecharge(r, group, admin, orderService, opts.Recharge, token)
 }

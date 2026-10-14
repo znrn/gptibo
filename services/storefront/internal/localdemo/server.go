@@ -23,6 +23,7 @@ import (
 	"gptibo/storefront/internal/securityaudit"
 	"gptibo/storefront/internal/store"
 	"gptibo/storefront/internal/worker"
+	"gptibo/storefront/internal/xgift"
 	"io"
 	"log/slog"
 	"net"
@@ -160,13 +161,23 @@ func New(ctx context.Context, c Config, logger *slog.Logger) (*Server, error) {
 	}
 	ds := &domains.Service{Store: s, Provider: DomainProvider{}, DNS: DomainDNS{s, "shops.example.invalid"}, Target: "shops.example.invalid", Zone: "platform.example.invalid", Limit: 100, MonthlyFeeCents: 1000, EligibilityOverrides: eligible}
 	audit := &securityaudit.Service{Store: s, Auth: a, Sender: mail, Recipient: "local-admin@example.invalid"}
+	xc, e := xgift.NewClient("https://local-x.example.invalid/v1", "platform", "", "local-demo", c.Secret)
+	if e != nil {
+		return nil, e
+	}
+	xc.HTTP = &http.Client{Transport: XTransport{state}, Timeout: 5 * time.Second}
+	xg := &xgift.Service{Store: s, Auth: a, Clients: map[string]*xgift.Client{"platform": xc}, Backend: "platform", Checkout: true, PaymentReady: true}
+	sms := SMS{Store: s}
 	gin.SetMode(gin.ReleaseMode)
-	api := httpapi.Router(s, "local-demo", logger, httpapi.Options{PlatformLinksOnly: true, Origin: c.Origin, Auth: a, SecurityAudit: audit, Domains: ds, Payments: ps, PaymentTesting: true, Recharge: rc, Procurement: pc, MailSender: mail, AdminEmail: "local-admin@example.invalid"})
+	api := httpapi.Router(s, "local-demo", logger, httpapi.Options{Fulfillment: sms, XGift: xg, PlatformLinksOnly: true, Origin: c.Origin, Auth: a, SecurityAudit: audit, Domains: ds, Payments: ps, PaymentTesting: true, Recharge: rc, Procurement: pc, MailSender: mail, AdminEmail: "local-admin@example.invalid"})
 	server := &Server{Config: c, Store: s, Auth: a, Mail: mail, Supplier: sim, Recharge: rc, Payments: ps, API: api, State: state}
 	server.Billing = &domainbilling.Service{Store: s, Payments: *ps, MonthlyFeeCents: 1000, RenewEnabled: func() bool { return true }, VerifySupplier: rc.Verify}
 	server.Invoices = &invoices.Service{Store: s, Auth: a, Payments: ps, Provider: ps.Provider, NotifyOrigin: ps.NotifyOrigin}
 	rf := refunds.Service{Store: s, Supplier: rc}
 	jobs := []worker.Job{
+		{Name: "local-sms", Interval: time.Second, Timeout: 30 * time.Second, Run: sms.Reconcile},
+		{Name: "local-xgift", Interval: 5 * time.Second, Timeout: 30 * time.Second, Run: xg.Reconcile},
+		{Name: "local-payments", Interval: 5 * time.Second, Timeout: 30 * time.Second, Run: func(ctx context.Context) error { _, e := ps.Reconcile(ctx); return e }},
 		{Name: "local-domain-billing", Interval: 15 * time.Second, Timeout: 30 * time.Second, Run: server.Billing.Reconcile},
 		{Name: "local-invoice-payment", Interval: 15 * time.Second, Timeout: 30 * time.Second, Run: func(ctx context.Context) error { _, e := server.Invoices.Reconcile(ctx); return e }},
 		{Name: "local-procurement", Interval: 5 * time.Second, Timeout: 30 * time.Second, Run: pc.Reconcile},
@@ -194,7 +205,7 @@ func seed(ctx context.Context, s *store.Store) error {
 	plans := []struct {
 		id, product, name string
 		price             int64
-	}{{"plus", "chatgpt", "ChatGPT Plus", 13900}, {"pro-5x", "chatgpt", "ChatGPT Pro 5x", 69900}, {"pro-20x", "chatgpt", "ChatGPT Pro 20x", 140000}, {"pro-25x", "chatgpt", "ChatGPT Pro 25x", 450000}, {"codex-sms-once", "codex", "Codex 短信验证", 1000}, {"gemini-pro-18m", "gemini", "Gemini Pro 18 个月", 1990}, {"duolingo-12m", "duolingo", "多邻国 12 个月", 1990}, {"gmail-account", "gmail", "Gmail 账号", 1880}, {"x-premium-3m", "x", "X Premium 3 个月", 1700}, {"x-premium-6m", "x", "X Premium 6 个月", 3400}}
+	}{{"plus", "chatgpt", "ChatGPT Plus", 13900}, {"pro-5x", "chatgpt", "ChatGPT Pro 5x", 69900}, {"pro-20x", "chatgpt", "ChatGPT Pro 20x", 140000}, {"pro-25x", "chatgpt", "ChatGPT Pro 25x", 450000}, {"codex-sms-once", "codex-sms", "Codex 短信验证", 1000}, {"gemini-pro-18m", "gemini", "Gemini Pro 18 个月", 1990}, {"duolingo-12m", "duolingo", "多邻国 12 个月", 1990}, {"gmail-account", "gmail", "Gmail 账号", 1880}, {"x-premium-3m", "x-premium", "X Premium 3 个月", 1700}, {"x-premium-6m", "x-premium", "X Premium 6 个月", 3400}}
 	for i, p := range plans {
 		_, e = tx.Exec(ctx, `INSERT INTO catalog_plans(id,product_id,name,price_cents,default_cost_cents,enabled,partner_enabled,purchase_note,sort_order) VALUES($1,$2,$3,$4,$5,true,true,'本机演示数据；不会实际购买、充值或交付商品。',$6) ON CONFLICT(id) DO NOTHING`, p.id, p.product, p.name, p.price, p.price*7/10, i)
 		if e != nil {
@@ -211,6 +222,10 @@ func seed(ctx context.Context, s *store.Store) error {
 				return e
 			}
 		}
+	}
+	// Correct identifiers from the earlier demo seed without overwriting edited prices.
+	if _, e = tx.Exec(ctx, `UPDATE catalog_plans SET product_id=CASE WHEN id='codex-sms-once' THEN 'codex-sms' ELSE 'x-premium' END WHERE (id='codex-sms-once' AND product_id='codex') OR (id IN ('x-premium-3m','x-premium-6m') AND product_id='x')`); e != nil {
+		return e
 	}
 	// The production partner_default_store trigger creates each default store.
 	return tx.Commit(ctx)

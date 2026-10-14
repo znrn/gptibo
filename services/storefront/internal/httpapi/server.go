@@ -19,6 +19,7 @@ import (
 	"gptibo/storefront/internal/delivery"
 	"gptibo/storefront/internal/domains"
 	"gptibo/storefront/internal/mailer"
+	"gptibo/storefront/internal/orders"
 	"gptibo/storefront/internal/payments"
 	"gptibo/storefront/internal/procurement"
 	"gptibo/storefront/internal/recharge"
@@ -31,6 +32,7 @@ import (
 type Options struct {
 	// Keep preview links on the platform origin when custom domains are simulated.
 	PlatformLinksOnly bool
+	Fulfillment       orders.FulfillmentProvider
 	AdminAccess       *access.Service
 	SecurityAudit     *securityaudit.Service
 	Turnstile         *turnstile.Service
@@ -201,6 +203,13 @@ func Router(s *store.Store, workerID string, logger *slog.Logger, options ...Opt
 			original := append([]catalog.Plan(nil), plans...)
 			if previous != nil {
 				plans = previous(ctx, plans)
+			}
+			if opts.Fulfillment != nil {
+				for i := range plans {
+					if opts.Fulfillment.Enabled(plans[i].ID) {
+						plans[i].Enabled = original[i].Enabled
+					}
+				}
 			}
 			gift := opts.XGift.Availability(ctx, original)
 			for i := range plans {

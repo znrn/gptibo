@@ -23,3 +23,11 @@ test('admin exposes protected X recovery only for paid, unrefunded wallet failur
     { failureCode: 'checkout_inactive' }, { failureCode: 'x_price_changed' },
   ]) assert.equal(Boolean(canRecoverXGift({ ...eligible, xgift: { ...eligible.xgift!, ...change } })), false, JSON.stringify(change))
 })
+
+// Go can explicitly advertise price-change recovery; older Worker APIs cannot.
+test('admin exposes price-change recovery only when the backend advertises support', () => {
+  const priceChange = { ...eligible, xgift: { ...eligible.xgift!, failureCode: 'x_price_changed', recoveryAvailable: true } }
+  assert.equal(canRecoverXGift(priceChange), true)
+  assert.equal(Boolean(canRecoverXGift({ ...priceChange, refundHold: true })), false)
+  assert.equal(Boolean(canRecoverXGift({ ...priceChange, xgift: { ...priceChange.xgift, recoveryAvailable: false } })), false)
+})

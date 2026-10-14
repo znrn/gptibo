@@ -20,6 +20,7 @@ type Letter struct {
 	Time    string `json:"time"`
 }
 type Snapshot struct {
+	XOrders  map[string]XOrder                `json:"xOrders"`
 	Letters  []Letter                         `json:"letters"`
 	Orders   map[string]recharge.RemoteOrder  `json:"orders"`
 	Attempts map[string]recharge.Redemption   `json:"attempts"`
@@ -43,6 +44,9 @@ func OpenState(path string) (*State, error) {
 		if e = json.Unmarshal(b, &s.Snapshot); e != nil {
 			return nil, e
 		}
+	}
+	if s.XOrders == nil {
+		s.XOrders = map[string]XOrder{}
 	}
 	if s.Orders == nil {
 		s.Orders = map[string]recharge.RemoteOrder{}

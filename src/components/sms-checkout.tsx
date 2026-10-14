@@ -12,6 +12,7 @@ export function SmsCheckout({ order, onOpenChange, onAction, onOrders, busy, pen
   const [optionsOpen, setOptionsOpen] = useState(false)
   if (!order) return null
   if (order.redemptionBlocked) return <div className="order-service-paused">本订单已由客服处理，无法再次兑换。<br />如有疑问，请联系支持。</div>
+  const code = order.sms?.code ?? (order.mode === 'demo' ? '123456' : '')
   const action = (value: OrderAction) => { if (busy) return; onAction(order.id, value) }
   return <div className="sms-checkout">
     {order.smsPhone && !['pending', 'cancelled'].includes(order.status) && <div className="sms-phone-panel"><div className="sms-phone-caption"><span><Phone size={14} />本次手机号</span><span>测试号码</span></div><div className="sms-phone-value"><strong>{order.smsPhone}</strong><CopyButton iconOnly variant="ghost" value={order.smsPhone!} label="复制测试手机号" /></div><p>测试用号码，不能接收真实短信。</p></div>}
@@ -33,7 +34,7 @@ export function SmsCheckout({ order, onOpenChange, onAction, onOrders, busy, pen
         <AsyncButton className="primary-action" loading={pendingAction?.startsWith('submit-')} pendingLabel="正在发起查询" onClick={() => action(outcome === 'failed' ? 'submit-failed' : 'submit-success')}><Search size={16} />查询结果 <ArrowRight /></AsyncButton>
       </>}
       {order.status === 'processing' && <div className="result-body" role="status"><div className="result-icon"><LoaderCircle className="processing-spinner" size={34} strokeWidth={1.5} /></div><h3>正在查询短信结果</h3><p>你可以关闭窗口，稍后从订单查看。<br />测试结果约 5 秒返回。</p><div className="processing-track"><span /></div><Button variant="outline" className="primary-action sms-result-action" onClick={onOrders}>查看我的订单</Button></div>}
-      {order.status === 'success' && <div className="result-body"><SuccessMark /><h3>测试验证码</h3><p>测试用结果，不能用于真实验证。</p><div className="sms-code" aria-label="测试验证码 123456">123456</div><CopyButton variant="outline" className="primary-action" value="123456" label="复制测试验证码" /><Button className="primary-action sms-result-action" onClick={onOrders}>查看我的订单 <ArrowRight /></Button></div>}
+      {order.status === 'success' && <div className="result-body"><SuccessMark /><h3>测试验证码</h3><p>测试用结果，不能用于真实验证。</p><div className="sms-code" aria-label={'测试验证码 ' + code}>{code}</div><CopyButton variant="outline" className="primary-action" value={code} label="复制测试验证码" /><Button className="primary-action sms-result-action" onClick={onOrders}>查看我的订单 <ArrowRight /></Button></div>}
       {order.status === 'failed' && <div className="result-body"><div className="result-icon warning"><TriangleAlert size={30} /></div><h3>暂未收到验证码</h3><p>当前测试场景为短信等待超时。<br />可使用本次测试号码重新查询，无需重复付款。</p><AsyncButton className="primary-action" loading={pendingAction === 'retry'} pendingLabel="正在恢复查询" onClick={() => action('retry')}><RotateCcw size={16} />返回查询</AsyncButton></div>}
       {order.status === 'cancelled' && <div className="result-body"><div className="result-icon"><X size={30} /></div><h3>订单已关闭</h3><p>没有产生实际扣款。</p><Button variant="outline" className="primary-action" onClick={() => onOpenChange(false)}>返回商品详情</Button></div>}
     </fieldset>}

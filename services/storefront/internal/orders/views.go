@@ -47,6 +47,9 @@ func (s Service) renderView(o Order, admin bool, related viewRelations) (map[str
 	if o.Phone != nil {
 		out["smsPhone"] = *o.Phone
 	}
+	if s.Fulfillment != nil && s.Fulfillment.Enabled(o.Plan) {
+		out["sms"] = s.Fulfillment.View(o)
+	}
 	out["paymentSummary"] = related.payment
 	contacts := related.contacts
 	out["supportContacts"] = contacts
@@ -133,6 +136,9 @@ func (s Service) renderView(o Order, admin bool, related viewRelations) (map[str
 	x := related.gift
 	if len(x) > 0 {
 		v := x[0]
+		if !admin {
+			delete(v, "recoveryAvailable")
+		}
 		message := "付款确认后自动开始赠送。"
 		if o.Payment == "paid" {
 			message = "赠送正在处理，请稍候。"

@@ -16,7 +16,17 @@ import (
 	"gptibo/storefront/internal/store"
 )
 
+// FulfillmentProvider adds an explicitly supplied product adapter. Production
+// commands leave it nil; the local demo supplies its isolated SMS adapter.
+type FulfillmentProvider interface {
+	Enabled(string) bool
+	Snapshot(context.Context, pgx.Tx, Order, CreateInput) error
+	Action(Order, ActionInput) (Order, error)
+	View(Order) map[string]any
+}
+
 type Service struct {
+	Fulfillment             FulfillmentProvider
 	VerifyCreation          func(context.Context, CreateInput) error
 	ProtectCreation         bool
 	Store                   *store.Store
@@ -458,6 +468,17 @@ func (s Service) Action(ctx context.Context, id string, access *Access, adminTok
 	} else if !(admin && in.Action == "note") {
 		if o.Blocked != 0 || o.Hold != 0 || o.Refunded >= o.Price {
 			return o, fault.New(409, "订单已禁止兑换、处于售后或已全额退款。")
+		}
+		if !admin && o.Mode == "live" && s.Fulfillment != nil && s.Fulfillment.Enabled(o.Plan) {
+			next, e = s.Fulfillment.Action(o, in)
+			if e != nil {
+				return o, e
+			}
+			next, e = Change(ctx, tx, o, next, actor, in.Action, "本机模拟短信服务："+in.Action)
+			if e != nil {
+				return o, e
+			}
+			return next, tx.Commit(ctx)
 		}
 		if !admin && o.Mode != "demo" {
 			return o, fault.New(403, "该订单不支持此操作。")

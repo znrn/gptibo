@@ -7,5 +7,5 @@ export function canRecoverXGift(order: ServerOrder) {
     && order.paymentStatus === 'paid' && order.status === 'failed'
     && !order.refundHold && !order.redemptionBlocked && !order.refundedCents
     && order.xgift?.state === 'failed' && !order.xgift.receipt?.trim()
-    && order.xgift.failureCode === 'card_wallet_insufficient'
+    && (order.xgift.failureCode === 'card_wallet_insufficient' || order.xgift.failureCode === 'x_price_changed' && order.xgift.recoveryAvailable === true)
 }
