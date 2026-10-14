@@ -54,6 +54,12 @@ export async function customerRefunds(request: Request, env: Env, order: Order) 
 }
 
 export async function adminRefunds(request: Request, env: Env, url: URL) {
+  if (url.pathname === '/api/admin/refunds/notifications') {
+    if (request.method !== 'GET') throw new ApiError('请求方式不支持。', 405)
+    // Retained submissions form a stable version: status changes and imported
+    // supplier refunds must not masquerade as new customer requests.
+    return json(await env.INTEREST_DB.prepare("SELECT COUNT(CASE WHEN request_key NOT LIKE 'external-refund:%' THEN 1 END) version,COUNT(CASE WHEN status IN ('pending','approved') THEN 1 END) pending FROM refund_cases").first())
+  }
   const db = env.INTEREST_DB; const path = url.pathname
   if (path === '/api/admin/refunds' && request.method === 'GET') {
     const page = Number(url.searchParams.get('page') ?? 1); const status = url.searchParams.get('status') ?? ''

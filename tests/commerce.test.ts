@@ -1669,3 +1669,116 @@ test('admin mailbox comes from server configuration and rotation revokes session
   assert.equal((await mail.send()).status, 503)
   assert.equal(mail.mails.length, 1)
 })
+
+async function ticketFixture(t: Parameters<Parameters<typeof test>[1]>[0]) {
+  const s = await setup(); t.after(() => s.db.close())
+  const admin = await s.login(); const first = await seedPartner(s, admin, 'FIRSTA'); await seedPartner(s, admin, 'SECONA')
+  const mail = mockPartnerMail(t, s)
+  const partner = await mail.login('firsta@example.test'), other = await mail.login('secona@example.test')
+  const buyer = await s.buyer(), order = await s.create(buyer)
+  s.db.prepare('UPDATE orders SET partner_id=? WHERE id=?').run(first, order.id)
+  return { ...s, admin, partner, other, buyer, order, input: { key: crypto.randomUUID(), orderId: order.id, subject: '充值订单问题', body: '请核对订单进展。' } }
+}
+
+test('ticket workflow preserves notification versions across retries, admin replies and partner reopen', async t => {
+  const s = await ticketFixture(t)
+  const summary = async () => (await s.request('/api/admin/tickets/notifications', undefined, s.admin)).json()
+  assert.deepEqual(await summary(), { version: 0, pending: 0 })
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const response = await s.request('/api/partner/tickets', s.input, s.partner)
+    assert.equal(response.status, 200, await response.clone().text()); assert.deepEqual(await response.json(), { id: s.input.key })
+  }
+  assert.deepEqual(await summary(), { version: 1, pending: 1 })
+  const list = await (await s.request('/api/admin/tickets?q=FIRSTA&status=open', undefined, s.admin)).json()
+  assert.equal(list.total, 1); assert.equal(list.rows[0].subject, s.input.subject)
+  const path = '/api/admin/tickets/' + s.input.key
+  const detail = await (await s.request(path, undefined, s.admin)).json()
+  assert.equal(detail.events.length, 1); assert.equal(detail.events[0].body, s.input.body)
+  const reply = { key: crypto.randomUUID(), version: 0, status: 'waiting', body: '请补充订单截图。' }
+  for (let attempt = 0; attempt < 2; attempt++) assert.equal((await s.request(path + '/replies', reply, s.admin)).status, 200)
+  assert.deepEqual(await summary(), { version: 1, pending: 0 })
+  assert.equal((await s.request(path + '/replies', { ...reply, key: crypto.randomUUID() }, s.admin)).status, 409)
+  const reopen = { key: crypto.randomUUID(), version: 1, status: 'open', body: '已补充说明，请继续处理。' }
+  for (let attempt = 0; attempt < 2; attempt++) assert.equal((await s.request('/api/partner/tickets/' + s.input.key + '/replies', reopen, s.partner)).status, 200)
+  assert.deepEqual(await summary(), { version: 2, pending: 1 })
+  assert.equal((await s.request(path + '/replies', { key: crypto.randomUUID(), version: 2, status: 'resolved', body: '问题已解决。' }, s.admin)).status, 200)
+  assert.deepEqual(await summary(), { version: 2, pending: 0 })
+  const final = await (await s.request(path, undefined, s.admin)).json()
+  assert.equal(final.version, 3); assert.equal(final.events.length, 4); assert.equal(final.status, 'resolved')
+})
+
+test('ticket routes enforce authentication, ownership, input limits, same origin and idempotency keys', async t => {
+  const s = await ticketFixture(t)
+  for (const path of ['/api/admin/tickets', '/api/admin/tickets/notifications', '/api/admin/refunds/notifications']) {
+    assert.equal((await s.request(path)).status, 401)
+    assert.equal((await s.request(path, undefined, s.partner)).status, 401)
+  }
+  assert.equal((await s.request('/api/partner/tickets')).status, 401)
+  assert.equal((await s.request('/api/partner/tickets', s.input, s.other)).status, 404)
+  assert.equal((await s.request('/api/partner/tickets', s.input, s.partner, 'https://unrelated.example.invalid')).status, 403)
+  for (const patch of [{ key: 'bad' }, { subject: ' ' }, { subject: '标'.repeat(121) }, { body: '字'.repeat(5001) }]) {
+    assert.equal((await s.request('/api/partner/tickets', { ...s.input, ...patch }, s.partner)).status, 400)
+  }
+  assert.equal((await s.request('/api/partner/tickets', s.input, s.partner)).status, 200)
+  assert.equal((await s.request('/api/partner/tickets', { ...s.input, body: 'changed' }, s.partner)).status, 409)
+  const path = '/api/partner/tickets/' + s.input.key
+  assert.equal((await s.request(path, undefined, s.other)).status, 404)
+  assert.equal((await s.request(path + '/replies', { key: crypto.randomUUID(), version: 0, status: 'open', body: 'foreign' }, s.other)).status, 404)
+  assert.equal((await s.request(path + '/replies', { key: crypto.randomUUID(), version: 0, status: 'resolved', body: 'invalid' }, s.partner)).status, 400)
+  assert.equal((await (await s.request('/api/partner/tickets', undefined, s.other)).json()).total, 0)
+  for (const query of ['page=0', 'page=1.5', 'status=bad', 'q=' + 'a'.repeat(321)]) assert.equal((await s.request('/api/admin/tickets?' + query, undefined, s.admin)).status, 400)
+  for (const kind of ['tickets', 'refunds']) assert.equal((await s.request('/api/admin/' + kind + '/notifications', {}, s.admin)).status, 405)
+})
+
+test('ticket writes roll back on event failures and reject cross-ticket reply-key collisions without mutations', async t => {
+  const s = await ticketFixture(t)
+  s.db.exec("CREATE TRIGGER fail_ticket_event BEFORE INSERT ON partner_ticket_events BEGIN SELECT RAISE(ABORT,'private failure'); END")
+  assert.equal((await s.request('/api/partner/tickets', s.input, s.partner)).status, 503)
+  assert.equal(s.db.prepare('SELECT COUNT(*) n FROM partner_tickets').get()!.n, 0)
+  assert.equal(s.db.prepare('SELECT version FROM partner_ticket_notifications').get()!.version, 0)
+  s.db.exec('DROP TRIGGER fail_ticket_event')
+  assert.equal((await s.request('/api/partner/tickets', s.input, s.partner)).status, 200)
+  const second = { ...s.input, key: crypto.randomUUID(), subject: 'another ticket' }
+  assert.equal((await s.request('/api/partner/tickets', second, s.partner)).status, 200)
+  const reply = { key: crypto.randomUUID(), version: 0, status: 'waiting', body: 'reply' }
+  assert.equal((await s.request('/api/admin/tickets/' + s.input.key + '/replies', reply, s.admin)).status, 200)
+  assert.equal((await s.request('/api/admin/tickets/' + second.key + '/replies', reply, s.admin)).status, 409)
+  assert.equal(s.db.prepare('SELECT version FROM partner_tickets WHERE id=?').get(second.key)!.version, 0)
+  assert.equal((await s.request('/api/partner/tickets', { ...s.input, key: reply.key }, s.partner)).status, 409)
+  assert.equal(s.db.prepare('SELECT COUNT(*) n FROM partner_tickets').get()!.n, 2)
+})
+
+test('refund notifications count pending work separately from new customer submissions', async t => {
+  const s = await setup(); t.after(() => s.db.close()); const admin = await s.login(), buyer = await s.buyer()
+  const summary = async () => (await s.request('/api/admin/refunds/notifications', undefined, admin)).json()
+  assert.deepEqual(await summary(), { version: 0, pending: 0 })
+  const order = await s.create(buyer)
+  const paid = await (await s.request('/api/orders/' + order.id + '/demo-actions', { action: 'pay', version: order.version }, buyer)).json()
+  const input = { key: crypto.randomUUID(), version: paid.order.version, reason: '需要退款' }
+  for (let attempt = 0; attempt < 2; attempt++) assert.equal((await s.request('/api/orders/' + order.id + '/refunds', input, buyer)).status, attempt === 0 ? 201 : 200)
+  assert.deepEqual(await summary(), { version: 1, pending: 1 })
+  const row = s.db.prepare('SELECT * FROM refund_cases WHERE order_id=?').get(order.id)!
+  assert.equal((await s.request('/api/admin/refunds/' + row.id, { action: 'approve', version: row.version, amountCents: 13900, note: '批准测试退款' }, admin)).status, 200)
+  assert.deepEqual(await summary(), { version: 1, pending: 1 })
+  assert.equal((await s.request('/api/admin/refunds/' + row.id, { action: 'complete', version: 1, note: '完成测试退款' }, admin)).status, 200)
+  assert.deepEqual(await summary(), { version: 1, pending: 0 })
+  const external = await s.create(buyer), now = Date.now()
+  s.db.prepare("INSERT INTO refund_cases(id,order_id,request_key,reason,requested_cents,created_at,updated_at,last_event_id) VALUES (?,?,?,'supplier refund',100,?,?,?)").run(crypto.randomUUID(), external.id, 'external-refund:fixture', now, now, crypto.randomUUID())
+  assert.deepEqual(await summary(), { version: 1, pending: 1 })
+})
+
+test('concurrent ticket replies keep a single winning version and roll back failed replies', async t => {
+  const s = await ticketFixture(t)
+  assert.equal((await s.request('/api/partner/tickets', s.input, s.partner)).status, 200)
+  const path = '/api/admin/tickets/' + s.input.key + '/replies'
+  s.db.exec("CREATE TRIGGER fail_reply BEFORE INSERT ON partner_ticket_events WHEN NEW.version>0 BEGIN SELECT RAISE(ABORT,'private failure'); END")
+  assert.equal((await s.request(path, { key: crypto.randomUUID(), version: 0, status: 'waiting', body: 'must roll back' }, s.admin)).status, 503)
+  assert.equal(s.db.prepare('SELECT version FROM partner_tickets WHERE id=?').get(s.input.key)!.version, 0)
+  assert.equal(s.db.prepare('SELECT COUNT(*) n FROM partner_ticket_events').get()!.n, 1)
+  s.db.exec('DROP TRIGGER fail_reply')
+  const responses = await Promise.all(['first', 'second'].map(body => s.request(path, { key: crypto.randomUUID(), version: 0, status: 'waiting', body }, s.admin)))
+  assert.deepEqual(responses.map(r => r.status).sort(), [200, 409])
+  assert.equal(s.db.prepare('SELECT version FROM partner_tickets WHERE id=?').get(s.input.key)!.version, 1)
+  assert.equal(s.db.prepare('SELECT COUNT(*) n FROM partner_ticket_events').get()!.n, 2)
+  assert.equal(s.db.prepare('SELECT version FROM partner_ticket_notifications').get()!.version, 1)
+})

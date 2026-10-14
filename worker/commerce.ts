@@ -28,6 +28,7 @@ import { invoiceRoutes } from './invoices.ts'
 import { publicAnnouncement } from './announcements.ts'
 import { rechargeReminderPreview } from './recharge-reminders.ts'
 import { adminGmailOrder, confirmGmailNotPurchased, fulfillGmail, gmailCheckoutEnabled, gmailProductsRoute, gmailSnapshot, gmailSnapshotStatement } from './account_supplier/service.ts'
+import { ticketRoutes } from './tickets.ts'
 
 type Plan = { delivery_instructions: string; partner_enabled: number; id: string; product_id: string; name: string; price_cents: number; enabled: number; renewal_only: number; version: number }
 type OrderPartnerSource = { id: string; slug: string; name: string; email: string; wechat: string; qq: string }
@@ -69,10 +70,12 @@ export async function commerce(request: Request, env: Env): Promise<Response> {
     if (auth) return auth
     const partnerLogin = await partnerAuth(request, env, path)
     if (partnerLogin) return partnerLogin
+    if (path === '/api/partner/tickets' || path.startsWith('/api/partner/tickets/')) return await ticketRoutes(request, env, url)
     if (path === '/api/partner/invoices' || path.startsWith('/api/partner/invoices/')) return await invoiceRoutes(request, env, url)
     if (path.startsWith('/api/partner/')) return await partnerRoutes(request, env, url)
     if (path.startsWith('/api/admin/')) {
       await requireAdmin(request, env)
+      if (path === '/api/admin/tickets' || path.startsWith('/api/admin/tickets/')) return await ticketRoutes(request, env, url, true)
       if (path.startsWith('/api/admin/xgift/')) return await xgiftAdmin(request, env, url)
       if (path === '/api/admin/account_supplier' || path.startsWith('/api/admin/account_supplier/')) return await gmailProductsRoute(request, env, url)
       if (path === '/api/admin/recharge-reminders/preview') return await rechargeReminderPreview(request, env)
